@@ -316,15 +316,121 @@ if __name__ == "__main__":
 
 ---
 
-## 5. What's Next (not built yet)
+## 5. Day 2 Addition: Orchestration with Apache Airflow
+**Date built:** July 28, 2026
 
-- **Orchestration (Airflow):** automate this to run daily instead of manually
+### 5.1 The Business Problem This Solves
+
+Up to yesterday, the pipeline worked — but only if a human sat down and manually typed three commands in order:
+```bash
+python ingestion/fetch_news.py
+python transform/clean_articles.py
+python embed/embed_and_store.py
+```
+
+**In plain, layman's terms:** imagine you built a great vending machine, but every single day someone has to personally restock it by hand, in the right order, or it breaks. That's not a real business-ready system — it's a demo that depends on you remembering to run it.
+
+**What we solved today:** we hired an automatic, tireless "manager" (Apache Airflow) whose only job is to run those three steps, in the correct order, every single day, on its own — and to raise a red flag immediately if any step fails, instead of silently producing bad or stale data.
+
+**Why this matters for a real business:** stale data is a real cost. If a company's AI assistant is answering questions based on news from three weeks ago because nobody remembered to refresh it, that's a trust and reliability problem. Automated orchestration is what separates a "cool personal project" from "a system a business could actually depend on."
+
+### 5.2 What Airflow Actually Is (Layman's Explanation)
+
+Airflow is a **scheduling and monitoring tool**. Think of it like a project manager that:
+1. Knows the exact list of tasks that need to happen (`fetch → clean → embed`)
+2. Knows the correct order and won't let a later task start until the one before it finishes successfully
+3. Runs everything automatically on a schedule (we set it to once a day)
+4. Gives you a visual dashboard to see: did today's run succeed? Did anything fail? How long did each step take?
+
+This "list of tasks + their order" is called a **DAG** (Directed Acyclic Graph) — a fancy term that just means "a flowchart of steps where you never loop backward."
+
+### 5.3 Step-by-Step: What We Did Today
+
+| Step | What we did | Why |
+|---|---|---|
+| 1 | Installed Apache Airflow (`pip install apache-airflow`) | Adds the orchestration tool to our project environment |
+| 2 | Ran `airflow db migrate` | Airflow needs its own small internal database to keep track of run history, schedules, and logs — this sets that up |
+| 3 | Ran `airflow standalone` | Starts Airflow's web dashboard (port 8080) and its background "scheduler" (the part that actually watches the clock and triggers runs) |
+| 4 | Wrote a DAG file (`dags/ai_news_pipeline_dag.py`) | This is the actual "instruction sheet" telling Airflow what to run and in what order (details below) |
+| 5 | Pointed Airflow at our project's `dags/` folder | By default Airflow looks in its own private folder — we redirected it to look inside our GitHub repo instead, so our DAG lives with the rest of our code, not hidden away |
+| 6 | Logged into the Airflow web dashboard | Confirmed the system was healthy (database, scheduler, etc. all green) |
+| 7 | Found our DAG in the dashboard and triggered it manually | A real-world test run, to prove it works before trusting the automatic daily schedule |
+| 8 | Watched all 3 tasks turn green in the dashboard | Confirmed success — no manual commands needed, Airflow ran our entire pipeline by itself |
+| 9 | Re-ran `python api/query.py` after the automated run | Proved the *automated* run produced real, usable, fresh data — not just "tasks turned green" but "the actual business output is correct" |
+| 10 | Committed the DAG file to GitHub | Saved this new orchestration layer as part of the permanent, versioned project |
+
+### 5.4 The DAG Code, Explained in Plain Terms
+
+```python
+from datetime import datetime
+from airflow import DAG
+from airflow.providers.standard.operators.bash import BashOperator
+
+default_args = {
+    "owner": "lakshmi",
+    "retries": 1,
+}
+
+with DAG(
+    dag_id="ai_news_pipeline",
+    default_args=default_args,
+    description="Daily pipeline: fetch news -> clean -> embed & store",
+    schedule="@daily",
+    start_date=datetime(2026, 7, 28),
+    catchup=False,
+    tags=["rag", "news", "ai"],
+) as dag:
+
+    fetch_task = BashOperator(
+        task_id="fetch_news",
+        bash_command="cd /workspaces/DE-to-MLE-Journey && python ingestion/fetch_news.py",
+    )
+
+    clean_task = BashOperator(
+        task_id="clean_articles",
+        bash_command="cd /workspaces/DE-to-MLE-Journey && python transform/clean_articles.py",
+    )
+
+    embed_task = BashOperator(
+        task_id="embed_and_store",
+        bash_command="cd /workspaces/DE-to-MLE-Journey && python embed/embed_and_store.py",
+    )
+
+    fetch_task >> clean_task >> embed_task
+```
+
+| Code | Plain-English meaning |
+|---|---|
+| `dag_id="ai_news_pipeline"` | The name of this whole automated job, like naming a recipe |
+| `retries: 1` | If a step fails (e.g., the news website is briefly down), try it one more time automatically before giving up and alerting us — makes the system a bit more resilient to temporary hiccups |
+| `schedule="@daily"` | Run this whole thing once every day, automatically, no human needed |
+| `start_date` / `catchup=False` | Tells Airflow "start counting from today, and don't try to run for all the days in the past you weren't watching" — avoids it trying to "catch up" on days before we built it |
+| `BashOperator` | Each task here just means "go run this existing script exactly like we did by hand" — we didn't need to rewrite our scripts, we just told Airflow to call them for us |
+| `fetch_task >> clean_task >> embed_task` | This arrow syntax is the **dependency chain** — it literally means "run fetch first, then clean, then embed, in that exact order, and don't start the next one until the previous one succeeds" |
+
+**The single most important concept to explain to someone:** *"The `>>` arrows are what make this a real pipeline instead of three separate scripts. They guarantee the data is always fetched before it's cleaned, and always cleaned before it's embedded — so we never accidentally process stale or broken data out of order."*
+
+### 5.5 Problems We Ran Into Today (good to remember and mention in interviews — debugging is a real skill)
+
+| Problem | What it meant | How we fixed it |
+|---|---|---|
+| `airflow db init` command not found | We had a newer version of Airflow (3.x) where commands got renamed | Used `airflow db migrate` instead — same purpose, new name |
+| `airflow users create` command not found | Same version-naming issue — Airflow 3.x replaced manual user creation with `airflow standalone`, which auto-generates a login | Used `airflow standalone`, then retrieved the auto-generated password from a saved file |
+| DAG didn't show up in the dashboard at first | Airflow was still looking in its own default folder, not our project's `dags/` folder — a classic **environment configuration mismatch** | Set an environment variable (`AIRFLOW__CORE__DAGS_FOLDER`) pointing to the correct folder, then **fully restarted** Airflow so the change actually took effect (a partial restart in a terminal that already had the old settings loaded doesn't count) |
+| Deprecation warning on `BashOperator` import | The library reorganized where this tool lives internally, in a newer version | Updated the import line to the new correct location — small fix, no functional change |
+
+**Why documenting these matters:** In a real job, things rarely work perfectly on the first try. Being able to calmly explain "here's what broke, here's why, here's how I fixed it" is often more valuable to an interviewer than a system that worked flawlessly with no story behind it.
+
+---
+
+## 6. What's Next (not built yet)
+
 - **API wrapper (FastAPI):** turn `query.py` into a real web service/endpoint
 - **Deployment (Docker + AWS):** containerize and host it
 - **Documentation polish:** architecture diagram, README for the repo itself
 
 ---
 
-## 6. One-Sentence Summary (for a resume bullet or quick verbal explanation)
+## 7. One-Sentence Summary (for a resume bullet or quick verbal explanation)
 
-*"Built an end-to-end RAG pipeline that ingests live news via API, cleans and validates the data, generates vector embeddings for semantic search, and serves grounded, source-cited answers to natural-language questions using an LLM — demonstrating data engineering fundamentals combined with applied AI system design."*
+*"Built and orchestrated an end-to-end RAG pipeline that automatically ingests live news via API on a daily schedule (Apache Airflow), cleans and validates the data, generates vector embeddings for semantic search, and serves grounded, source-cited answers to natural-language questions using an LLM — demonstrating data engineering fundamentals, workflow orchestration, and applied AI system design."*
