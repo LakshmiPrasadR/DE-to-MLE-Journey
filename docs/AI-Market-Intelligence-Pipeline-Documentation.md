@@ -423,14 +423,90 @@ with DAG(
 
 ---
 
-## 6. What's Next (not built yet)
+## 6. Day 3 Addition: Exposing the System as a Real API (FastAPI)
+**Date built:** July 29, 2026
 
-- **API wrapper (FastAPI):** turn `query.py` into a real web service/endpoint
-- **Deployment (Docker + AWS):** containerize and host it
+### 6.1 The Business Problem This Solves
+
+Even with Airflow automating the data refresh, the actual "ask a question, get an answer" part still only worked one way: someone typing directly into a terminal on this specific machine (`python api/query.py`).
+
+**In plain, layman's terms:** imagine you built a great in-house AI assistant, but the *only* way to talk to it was to personally SSH into a server and type into a black command-line window. No website, no app, no way for a colleague, a phone app, or another piece of software to use it. That's not a usable product — it's a personal tool.
+
+**What we solved today:** we exposed the exact same "ask a question, get an answer" logic as a **web service** — a REST API. Now, anything that can send a request over the internet (a website, a mobile app, a Slack bot, another company's software, a teammate testing it in a browser) can ask it a question and get back a clean, structured answer. This is the actual mechanism by which AI features get built into real products.
+
+### 6.2 What FastAPI Actually Is (Layman's Explanation)
+
+FastAPI is a tool for turning a Python function into something the internet can talk to. Think of it like putting a **counter window** in front of your pipeline: instead of someone having to walk into the back office and run the machine themselves, they slide a request through the window ("what's happening with AI regulation?") and get a response slid back ("here's the answer, and here's where it came from") — without ever needing to know or touch what's happening inside.
+
+The two "windows" (called **endpoints**) we built:
+- `GET /` — a simple "are you alive?" check, used by monitoring tools to confirm the service is running
+- `POST /query` — the real one: send it a question, get back an answer + sources
+
+### 6.3 Step-by-Step: What We Did Today
+
+| Step | What we did | Why |
+|---|---|---|
+| 1 | Added `fastapi` and `uvicorn` to `requirements.txt`, installed them | FastAPI is the tool that defines the API; Uvicorn is the actual server that runs it and listens for incoming requests |
+| 2 | Created `api/main.py`, reusing the same retrieve/generate logic from `query.py` | No need to reinvent the AI logic — we just changed *how* it's triggered: from "typed into a terminal" to "sent over the web" |
+| 3 | Defined a `QueryRequest` structure (`question`, `n_results`) | This tells FastAPI exactly what shape of data to expect from anyone calling the API — like a form with required fields, so bad/malformed requests get rejected automatically with a clear error instead of crashing the system |
+| 4 | Started the server with `uvicorn api.main:app --reload --host 0.0.0.0 --port 8000` | This actually turns the code "on" and makes it listen for incoming web requests on port 8000 |
+| 5 | Tested the health check (`GET /`) | Confirmed the service was up and responding at all, before testing the real logic |
+| 6 | Opened the auto-generated interactive docs (`/docs`) | FastAPI automatically builds a webpage where you can test every endpoint by filling in a form — no coding needed to try it |
+| 7 | Sent a real test question through the `/query` endpoint via that docs page | Got back a proper structured JSON response: the answer, plus the exact source articles used — proof the whole chain (web request → retrieval → AI generation → response) works end-to-end |
+| 8 | Committed `api/main.py` and the updated `requirements.txt` to GitHub | Saved this as a permanent, versioned part of the project |
+
+### 6.4 The Code, Explained in Plain Terms
+
+```python
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+app = FastAPI(title="AI Market Intelligence API")
+
+class QueryRequest(BaseModel):
+    question: str
+    n_results: int = 3
+
+@app.get("/")
+def health_check():
+    return {"status": "ok", "service": "AI Market Intelligence API"}
+
+@app.post("/query")
+def query_endpoint(request: QueryRequest):
+    retrieved = retrieve(request.question, request.n_results)
+    answer = generate_answer(request.question, retrieved)
+    sources = [
+        {"title": meta["title"], "source": meta["source"], "url": meta["url"]}
+        for meta in retrieved["metadatas"][0]
+    ]
+    return {"question": request.question, "answer": answer, "sources": sources}
+```
+
+| Code | Plain-English meaning |
+|---|---|
+| `app = FastAPI(...)` | Creates "the counter window" — the actual web application object everything else attaches to |
+| `class QueryRequest(BaseModel)` | Defines the **required shape** of any incoming request — a question (text) is required, `n_results` is optional and defaults to 3 if not given. If someone sends something malformed, FastAPI rejects it automatically with a helpful error, before our code even runs |
+| `@app.get("/")` | A **decorator** — this is Python's way of saying "when someone visits this address with a GET request, run the function right below it" |
+| `def health_check()` | A simple function that just confirms the service is alive — used by monitoring systems to check "is this still running?" without doing any real work |
+| `@app.post("/query")` | Same idea, but for the real endpoint — "POST" means the caller is *sending data* (their question), not just visiting a page |
+| `def query_endpoint(request: QueryRequest)` | FastAPI automatically takes the incoming request, validates it matches our `QueryRequest` shape, and hands it to this function as a ready-to-use Python object |
+| The body of the function | Identical logic to `query.py` from Day 1 — retrieve relevant articles, generate a grounded answer — just returned as structured JSON instead of printed to a terminal |
+
+**The single most important concept to explain to someone:** *"This didn't require rewriting the AI logic at all — we took the exact same retrieve-and-generate code and just changed its 'front door' from a terminal prompt to a web address. That's the whole idea of an API: separating what the system does from how people access it."*
+
+### 6.5 What We Confirmed Working
+
+Sent a real question ("What is happening with AI regulation?") through the live API and got back a clean `200 OK` response with a grounded answer and three real, current, correctly sourced articles — proving the entire chain works exactly the same way through the API as it did through the terminal script, just now accessible over the web.
+
+---
+
+## 7. What's Next (not built yet)
+
+- **Deployment (Docker + AWS):** containerize this API and host it somewhere accessible beyond this Codespace
 - **Documentation polish:** architecture diagram, README for the repo itself
 
 ---
 
-## 7. One-Sentence Summary (for a resume bullet or quick verbal explanation)
+## 8. One-Sentence Summary (for a resume bullet or quick verbal explanation)
 
-*"Built and orchestrated an end-to-end RAG pipeline that automatically ingests live news via API on a daily schedule (Apache Airflow), cleans and validates the data, generates vector embeddings for semantic search, and serves grounded, source-cited answers to natural-language questions using an LLM — demonstrating data engineering fundamentals, workflow orchestration, and applied AI system design."*
+*"Built and orchestrated an end-to-end RAG pipeline that automatically ingests live news via API on a daily schedule (Apache Airflow), cleans and validates the data, generates vector embeddings for semantic search, and exposes grounded, source-cited natural-language Q&A through a FastAPI REST service — demonstrating data engineering fundamentals, workflow orchestration, and applied AI system design end-to-end."*
