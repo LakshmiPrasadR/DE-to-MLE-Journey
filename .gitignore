@@ -1,2 +1,5 @@
 .env
 data/
+ai-pipeline-key.pem
+*.pem
+__pycache__/

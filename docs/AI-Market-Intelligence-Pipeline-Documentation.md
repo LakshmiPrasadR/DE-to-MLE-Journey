@@ -510,3 +510,52 @@ Sent a real question ("What is happening with AI regulation?") through the live 
 ## 8. One-Sentence Summary (for a resume bullet or quick verbal explanation)
 
 *"Built and orchestrated an end-to-end RAG pipeline that automatically ingests live news via API on a daily schedule (Apache Airflow), cleans and validates the data, generates vector embeddings for semantic search, and exposes grounded, source-cited natural-language Q&A through a FastAPI REST service — demonstrating data engineering fundamentals, workflow orchestration, and applied AI system design end-to-end."*
+## Day 4 Addition: Containerizing and Deploying to AWS
+
+### The business problem this solves
+
+Up to this point, the whole pipeline only ran inside a personal development environment (a GitHub Codespace) — meaning nobody else could reach it, and it would disappear the moment that Codespace was deleted or timed out. Real products don't work that way: they run on servers that are always on, reachable from anywhere, and independent of any one developer's machine.
+
+This stage answers the question: **"How do I take something that works on my machine and make it a real, live, publicly usable service?"** That's the difference between a personal script and an actual product.
+
+### What Docker is, in plain terms
+
+Docker packages an application together with everything it needs to run (the exact Python version, all libraries, system dependencies) into a single, portable unit called an **image**. A running copy of that image is called a **container**. The value: "it works on my machine" stops being a problem, because the container carries its own environment with it — the same image runs identically on a laptop, a Codespace, or a cloud server.
+
+### What AWS EC2 is, in plain terms
+
+EC2 (Elastic Compute Cloud) is Amazon's rentable virtual server. Instead of buying and maintaining physical hardware, you rent a small remote computer by the hour (free, within limits, on the free tier) that stays running and reachable on the internet — this is what makes the API "live" instead of just running temporarily on a personal machine.
+
+### Step-by-step: what we did today
+
+1. **Wrote a `Dockerfile`** — a recipe telling Docker how to build the image: start from a minimal Python base, install dependencies, copy in the application code, and specify the command that starts the FastAPI server.
+2. **Added a `.dockerignore`** — tells Docker to skip copying things like the `data/` folder, `.env`, and `.git` into the image itself, keeping it lean and keeping secrets out of the image.
+3. **Built and tested the image locally** (in the Codespace first) — hit a bug where the container crashed because the vector database (`data/`) had been deliberately excluded from the image; fixed by mounting `data/` as an external **volume** at runtime instead of baking it in — a standard practice, since application code and data should be able to change independently.
+4. **Launched an AWS EC2 instance** — a small (`t2.micro`/`t3.micro`, free-tier) Ubuntu server, with a **security group** controlling exactly which network traffic is allowed in (SSH on port 22 for admin access, port 8000 for the API itself).
+5. **Connected to the instance via SSH**, installed Docker on it directly, cloned the GitHub repo onto the server, and rebuilt the image there (a real image needs to be built on the machine that will run it, or transferred to it — we chose to rebuild).
+6. **Ran the ingestion → clean → embed pipeline directly on the EC2 server** to populate a fresh vector database there, since the original one only existed in the Codespace and wasn't tracked in git (intentionally — see the `.gitignore` decision from Day 1).
+7. **Ran the Docker container on EC2** with the data volume mounted and the API keys passed in via `.env`, exposing it on port 8000.
+8. **Verified public reachability** by hitting `http://<public-IP>:8000/` directly from a browser (not the server itself) — confirming the API is now live on the open internet, not just accessible locally.
+
+### Real problems hit today, and how they were fixed
+
+| Problem | Root cause | Fix |
+|---|---|---|
+| SSH / EC2 Instance Connect kept failing ("Connection timed out") | Security group's SSH rule only allowed one specific IP, and both the browser-based Instance Connect tool and the Codespace's SSH client come from different IPs than expected | Widened the security group's SSH and port-8000 rules to allow broader access (acceptable for a temporary demo instance) |
+| `docker build` failed with a networking error on `docker run` | The `docker.io` Ubuntu package shipped without a required proxy binary in the expected place | Set `"userland-proxy": false` in Docker's daemon config |
+| Pasting into the browser-based SSH terminal didn't work | Browser terminal doesn't support standard clipboard shortcuts | Switched to SSHing into the instance from the Codespace terminal instead, where paste worked normally |
+| `docker build` ran out of disk space | The default install pulled in the full GPU/CUDA version of PyTorch (multiple GB), unnecessary on a CPU-only server | Modified the Dockerfile to explicitly install the CPU-only PyTorch build first, avoiding the CUDA packages entirely |
+| Python package install got silently `Killed` mid-download | The EC2 instance only has ~900MB of RAM with no swap space, so a large install got killed by Linux's out-of-memory protection | Added a swap file to give the instance breathing room during heavy installs |
+| `pip install` failed with "disk quota exceeded" | pip's temp directory was on a constrained mount | Redirected pip's temp directory (`TMPDIR`) to a location with more space |
+| Container kept crashing on startup (`Collection [news_articles] does not exist`) | The vector database only existed in the original Codespace; a fresh `git clone` on EC2 had no data (correctly, since `data/` is gitignored) | Re-ran the ingestion → clean → embed pipeline directly on the EC2 server to build a fresh vector database there |
+| Ran out of disk space again during rebuild, even after cleanup | The 8GB root volume was fundamentally too small for the OS + Docker + ML dependencies together | Resized the EBS volume from 8GB to 20GB in the AWS console, then grew the Linux partition and filesystem to use the new space |
+| A script wrote a file and got `PermissionError` | Folder ownership mismatch, likely left over from an earlier root-owned Docker write | Reset ownership of the project folder to the current user with `chown -R` |
+
+### What this demonstrates (interview-ready summary)
+
+*"I containerized a RAG pipeline with Docker and deployed it to a live AWS EC2 instance, debugging real infrastructure constraints along the way — memory limits, disk sizing, dependency bloat from unnecessary GPU packages, and network/security group configuration. The result is a publicly reachable REST API backed by an automated, scheduled data pipeline — the same overall shape as a real production AI feature."*
+
+### What's next
+- Add a domain name + HTTPS in front of the API (currently accessed via raw IP and HTTP)
+- Consider basic API-key auth before sharing the endpoint more broadly
+- Optionally move to a managed container service (ECS/Fargate) instead of a single EC2 instance for better reliability
